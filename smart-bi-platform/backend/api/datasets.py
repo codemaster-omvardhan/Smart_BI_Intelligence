@@ -148,8 +148,55 @@ def dataset_kpis(
                 for month, value in grouped.items()
             }
 
+    # --------- Growth Metrics ---------
+    growth_metrics = {}
+
+    for col, month_data in monthly_trend.items():
+        months = sorted(month_data.keys())
+        growth_metrics[col] = {}
+
+        for i in range(1, len(months)):
+            prev_month = months[i - 1]
+            curr_month = months[i]
+
+            prev_value = month_data[prev_month]
+            curr_value = month_data[curr_month]
+
+            if prev_value == 0:
+                growth = None
+            else:
+                growth = ((curr_value - prev_value) / prev_value) * 100
+
+            growth_metrics[col][curr_month] = round(growth, 2) if growth is not None else None
+
+    # --------- Anomaly Detection ---------
+
+    anomalies = {}
+
+    for col in numeric_cols:
+        series = df[col]
+
+        mean = series.mean()
+        std = series.std()
+
+        anomaly_points = []
+
+        if std != 0:
+            for idx, value in series.items():
+                z_score = (value - mean) / std
+                if abs(z_score) > 3:  # threshold
+                    anomaly_points.append({
+                        "row": int(idx),
+                        "value": float(value),
+                        "z_score": round(z_score, 2)
+                    })
+
+        anomalies[col] = anomaly_points
+
     return {
         "numeric_columns": numeric_cols,
         "kpis": kpi_results,
-        "monthly_trend": monthly_trend
+        "monthly_trend": monthly_trend,
+        "growth_metrics": growth_metrics,
+        "anomalies": anomalies
     }
