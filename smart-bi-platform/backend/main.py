@@ -4,6 +4,7 @@ from api.auth import router as auth_router
 from db.session import engine
 from db.base import Base
 from api.datasets import router as dataset_router
+import models.dataset_metadata
 
 
 app = FastAPI(title="Smart BI Platform API")
