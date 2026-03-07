@@ -10,6 +10,7 @@ class Dataset(Base):
     filename = Column(String, nullable=False)
     file_path = Column(String, nullable=False)
     upload_time = Column(DateTime, default=datetime.utcnow)
+    organization_id = Column(Integer, ForeignKey("organizations.id"))
 
     user_id = Column(Integer, ForeignKey("users.id"))
 

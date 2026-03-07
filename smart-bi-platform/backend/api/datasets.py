@@ -2,25 +2,28 @@ from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Path
 from sqlalchemy.orm import Session
 import shutil
 import os
+import pandas as pd
 
 from db.session import get_db
 from models.datasets import Dataset
+from models.dataset_metadata import DatasetMetadata
+
 from api.auth import get_current_user
+
 from services.metric_detector import detect_business_metrics
 from services.correlation_engine import detect_correlations
 from services.insight_engine import generate_insights
-from models.dataset_metadata import DatasetMetadata
 from services.metadata_engine import generate_metadata
 from services.data_quality_engine import analyze_data_quality
 from services.kpi_engine import calculate_kpis
-import pandas as pd
-import numpy as np
-from sqlalchemy.testing import db
 
 router = APIRouter(prefix="/datasets", tags=["Datasets"])
 
 UPLOAD_FOLDER = "uploads"
 
+# ----------------------------
+# Upload Dataset
+# ----------------------------
 @router.post("/upload")
 def upload_dataset(
     file: UploadFile = File(...),
@@ -47,7 +50,7 @@ def upload_dataset(
     db.commit()
     db.refresh(new_dataset)
 
-    # ---------- Generate Metadata ----------
+    # Generate metadata
     df = pd.read_csv(file_path)
 
     metadata = generate_metadata(df)
@@ -68,21 +71,22 @@ def upload_dataset(
     }
 
 
+# ----------------------------
+# Dataset Summary
+# ----------------------------
 @router.get("/{dataset_id}/summary")
 def dataset_summary(
     dataset_id: int = Path(...),
     current_user: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
 
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    try:
-        df = pd.read_csv(dataset.file_path)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Error reading CSV file")
+    df = pd.read_csv(dataset.file_path)
 
     summary = {
         "rows": len(df),
@@ -91,13 +95,13 @@ def dataset_summary(
     }
 
     for col in df.columns:
+
         column_info = {
             "name": col,
             "dtype": str(df[col].dtype),
             "missing_values": int(df[col].isnull().sum())
         }
 
-        # Numeric stats
         if pd.api.types.is_numeric_dtype(df[col]):
             column_info.update({
                 "mean": float(df[col].mean()),
@@ -109,209 +113,10 @@ def dataset_summary(
 
     return summary
 
-@router.get("/{dataset_id}/kpis")
-def dataset_kpis(
-    dataset_id: int,
-    current_user: str = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
 
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-
-    try:
-        df = pd.read_csv(dataset.file_path)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Error reading CSV")
-
-    # --------- Detect Date Columns First ---------
-    date_cols = []
-
-    for col in df.columns:
-        try:
-            df[col] = pd.to_datetime(df[col])
-            date_cols.append(col)
-        except:
-            continue
-
-    # --------- Detect Pure Numeric Columns ---------
-    numeric_cols = []
-
-    for col in df.columns:
-        if (
-            pd.api.types.is_numeric_dtype(df[col])
-            and not pd.api.types.is_datetime64_any_dtype(df[col])
-        ):
-            numeric_cols.append(col)
-
-    if not numeric_cols:
-        return {"message": "No numeric columns found"}
-
-    # --------- KPI Calculations ---------
-    kpi_results = {}
-
-    for col in numeric_cols:
-        kpi_results[col] = {
-            "total": float(df[col].sum()),
-            "average": float(df[col].mean())
-        }
-
-    # --------- Monthly Trend ---------
-    monthly_trend = {}
-
-    if date_cols:
-        date_col = date_cols[0]
-
-        df["month"] = df[date_col].dt.to_period("M")
-
-        for col in numeric_cols:
-            grouped = df.groupby("month")[col].sum()
-
-            monthly_trend[col] = {
-                str(month): float(value)
-                for month, value in grouped.items()
-            }
-
-    # --------- Growth Metrics ---------
-    growth_metrics = {}
-
-    for col, month_data in monthly_trend.items():
-        months = sorted(month_data.keys())
-        growth_metrics[col] = {}
-
-        for i in range(1, len(months)):
-            prev_month = months[i - 1]
-            curr_month = months[i]
-
-            prev_value = month_data[prev_month]
-            curr_value = month_data[curr_month]
-
-            if prev_value == 0:
-                growth = None
-            else:
-                growth = ((curr_value - prev_value) / prev_value) * 100
-
-            growth_metrics[col][curr_month] = round(growth, 2) if growth is not None else None
-
-    # --------- Anomaly Detection ---------
-
-    anomalies = {}
-
-    for col in numeric_cols:
-        series = df[col]
-
-        mean = series.mean()
-        std = series.std()
-
-        anomaly_points = []
-
-        if std != 0:
-            for idx, value in series.items():
-                z_score = (value - mean) / std
-                if abs(z_score) > 3:  # threshold
-                    anomaly_points.append({
-                        "row": int(idx),
-                        "value": float(value),
-                        "z_score": round(z_score, 2)
-                    })
-
-        anomalies[col] = anomaly_points
-
-    return {
-        "numeric_columns": numeric_cols,
-        "kpis": kpi_results,
-        "monthly_trend": monthly_trend,
-        "growth_metrics": growth_metrics,
-        "anomalies": anomalies
-    }
-
-@router.get("/{dataset_id}/metrics")
-def detect_metrics(
-    dataset_id: int,
-    current_user: str = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
-
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-
-    df = pd.read_csv(dataset.file_path)
-
-    detected = detect_business_metrics(df.columns)
-
-    return {
-        "detected_metrics": detected
-    }
-
-@router.get("/{dataset_id}/correlations")
-def dataset_correlations(
-    dataset_id: int,
-    current_user: str = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-
-    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
-
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-
-    df = pd.read_csv(dataset.file_path)
-
-    correlations = detect_correlations(df)
-
-    return {
-        "correlations": correlations
-    }
-
-
-@router.get("/{dataset_id}/insights")
-def dataset_insights(
-    dataset_id: int,
-    current_user: str = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-
-    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
-
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-
-    df = pd.read_csv(dataset.file_path)
-
-    correlations = detect_correlations(df)
-
-    # Placeholder until KPI service is refactored
-    growth_metrics = {}
-    anomalies = {}
-
-    insights = generate_insights(growth_metrics, correlations, anomalies)
-
-    return {
-        "insights": insights
-    }
-
-@router.get("/{dataset_id}/quality")
-def dataset_quality(
-    dataset_id: int,
-    current_user: str = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-
-    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
-
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-
-    df = pd.read_csv(dataset.file_path)
-
-    quality_report = analyze_data_quality(df)
-
-    return {
-        "data_quality": quality_report
-    }
-
+# ----------------------------
+# KPI Calculation
+# ----------------------------
 @router.get("/{dataset_id}/kpis")
 def dataset_kpis(
     dataset_id: int,
@@ -333,16 +138,102 @@ def dataset_kpis(
     }
 
 
-df = pd.read_csv(file_path)
+# ----------------------------
+# Metric Detection
+# ----------------------------
+@router.get("/{dataset_id}/metrics")
+def detect_metrics(
+    dataset_id: int,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
 
-metadata = generate_metadata(df)
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
 
-new_metadata = DatasetMetadata(
-    dataset_id=new_dataset.id,
-    numeric_columns=",".join(metadata["numeric_columns"]),
-    date_column=metadata["date_column"],
-    detected_metrics=""
-)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
 
-db.add(new_metadata)
-db.commit()
+    df = pd.read_csv(dataset.file_path)
+
+    detected = detect_business_metrics(df.columns)
+
+    return {
+        "detected_metrics": detected
+    }
+
+
+# ----------------------------
+# Correlation Analysis
+# ----------------------------
+@router.get("/{dataset_id}/correlations")
+def dataset_correlations(
+    dataset_id: int,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    df = pd.read_csv(dataset.file_path)
+
+    correlations = detect_correlations(df)
+
+    return {
+        "correlations": correlations
+    }
+
+
+# ----------------------------
+# Insight Generation
+# ----------------------------
+@router.get("/{dataset_id}/insights")
+def dataset_insights(
+    dataset_id: int,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    df = pd.read_csv(dataset.file_path)
+
+    correlations = detect_correlations(df)
+
+    growth_metrics = {}
+    anomalies = {}
+
+    insights = generate_insights(growth_metrics, correlations, anomalies)
+
+    return {
+        "insights": insights
+    }
+
+
+# ----------------------------
+# Data Quality Analysis
+# ----------------------------
+@router.get("/{dataset_id}/quality")
+def dataset_quality(
+    dataset_id: int,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    df = pd.read_csv(dataset.file_path)
+
+    quality_report = analyze_data_quality(df)
+
+    return {
+        "data_quality": quality_report
+    }
