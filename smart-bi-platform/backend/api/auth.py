@@ -12,6 +12,7 @@ from schemas.user import UserCreate, UserLogin
 from utils.security import hash_password, verify_password
 from utils.jwt_handler import create_access_token
 from core.config import settings
+from models.organization import Organization
 
 
 router = APIRouter(
@@ -27,22 +28,39 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 # REGISTER
 # -----------------------------
 @router.post("/register")
-def register(user: UserCreate, db: Session = Depends(get_db)):
+def register(
+    user: UserCreate,
+    organization_name: str,
+    db: Session = Depends(get_db)
+):
+
     existing_user = db.query(User).filter(User.email == user.email).first()
 
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    # Create organization
+    org = Organization(name=organization_name)
+
+    db.add(org)
+    db.commit()
+    db.refresh(org)
+
+    # Create user linked to organization
     new_user = User(
         email=user.email,
-        password=hash_password(user.password)
+        password=hash_password(user.password),
+        organization_id=org.id
     )
 
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
 
-    return {"message": "User registered successfully"}
+    return {
+        "message": "User registered",
+        "organization_id": org.id
+    }
 
 
 # -----------------------------
