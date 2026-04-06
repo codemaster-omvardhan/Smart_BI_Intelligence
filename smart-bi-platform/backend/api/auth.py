@@ -46,11 +46,12 @@ def register(
     db.commit()
     db.refresh(org)
 
-    # Create user linked to organization
+    # First user = Admin
     new_user = User(
         email=user.email,
         password=hash_password(user.password),
-        organization_id=org.id
+        organization_id=org.id,
+        role="admin"
     )
 
     db.add(new_user)
@@ -59,7 +60,8 @@ def register(
 
     return {
         "message": "User registered",
-        "organization_id": org.id
+        "organization_id": org.id,
+        "role": "admin"
     }
 
 

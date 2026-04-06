@@ -16,6 +16,7 @@ from services.insight_engine import generate_insights
 from services.metadata_engine import generate_metadata
 from services.data_quality_engine import analyze_data_quality
 from services.kpi_engine import calculate_kpis
+from utils.roles import require_role
 
 router = APIRouter(prefix="/datasets", tags=["Datasets"])
 
@@ -27,7 +28,7 @@ UPLOAD_FOLDER = "uploads"
 @router.post("/upload")
 def upload_dataset(
     file: UploadFile = File(...),
-    current_user: str = Depends(get_current_user),
+    user = Depends(require_role(["admin", "analyst"])),
     db: Session = Depends(get_db)
 ):
 

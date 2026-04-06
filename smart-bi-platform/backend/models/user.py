@@ -13,3 +13,5 @@ class User(Base):
     password = Column(String)
 
     organization_id = Column(Integer, ForeignKey("organizations.id"))
+
+    role = Column(String, default="viewer")  # admin / analyst / viewer
